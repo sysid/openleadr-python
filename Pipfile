@@ -1,0 +1,33 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+openleadr = {editable = true, path = "."}
+termcolor = "*"
+
+[dev-packages]
+black = "*"
+coverage = "*"
+build = "*"
+bump2version = "*"
+flake8 = "*"
+flake8-bugbear = "*"
+ipython = "*"
+isort = "*"
+pre-commit = "*"
+pytest-cov = "*"
+pytest-mock = "*"
+scriv = "*"
+#sphinx-rtd-theme = "*"
+pytest = "*"
+pytest-asyncio = "*"
+sphinx = "*"
+sphinxcontrib-apidoc = "*"
+
+# required for tests to find imports
+package = {editable = true, path = "."}
+
+[requires]
+python_version = "3.10"
