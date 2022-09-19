@@ -17,11 +17,15 @@
 from datetime import datetime, timedelta, timezone
 from dataclasses import is_dataclass, asdict
 from collections import OrderedDict
-import itertools
+from openleadr import enums, objects
+import asyncio
 import re
 import ssl
 import hashlib
 import uuid
+import logging
+
+logger = logging.getLogger('openleadr')
 
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 DATETIME_FORMAT_NO_MICROSECONDS = "%Y-%m-%dT%H:%M:%SZ"
@@ -32,24 +36,6 @@ def generate_id(*args, **kwargs):
     Generate a string that can be used as an identifier in OpenADR messages.
     """
     return str(uuid.uuid4())
-
-
-def indent_xml(message):
-    """
-    Indents the XML in a nice way.
-    """
-    INDENT_SIZE = 2
-    lines = [line.strip() for line in message.split("\n") if line.strip() != ""]
-    indent = 0
-    for i, line in enumerate(lines):
-        if i == 0:
-            continue
-        if re.search(r'^</[^>]+>$', line):
-            indent = indent - INDENT_SIZE
-        lines[i] = " " * indent + line
-        if not (re.search(r'</[^>]+>$', line) or line.endswith("/>")):
-            indent = indent + INDENT_SIZE
-    return "\n".join(lines)
 
 
 def flatten_xml(message):
@@ -78,6 +64,9 @@ def normalize_dict(ordered_dict):
             key = key[4:]
         elif key.startswith('ei'):
             key = key[2:]
+        # Don't normalize the measurement descriptions
+        if key in enums._MEASUREMENT_NAMESPACES:
+            return key
         key = re.sub(r'([a-z])([A-Z])', r'\1_\2', key)
         if '-' in key:
             key = key.replace('-', '_')
@@ -108,7 +97,12 @@ def normalize_dict(ordered_dict):
         elif value in ('true', 'false'):
             d[key] = parse_boolean(value)
         elif isinstance(value, str):
-            d[key] = parse_int(value) or parse_float(value) or value
+            if re.match(r'^-?\d+$', value):
+                d[key] = int(value)
+            elif re.match(r'^-?[\d.]+$', value):
+                d[key] = float(value)
+            else:
+                d[key] = value
         else:
             d[key] = value
 
@@ -118,7 +112,7 @@ def normalize_dict(ordered_dict):
             key = key[5:]
 
         # Group all targets as a list of dicts under the key "target"
-        if key in ("target",):
+        if key == 'target':
             targets = d.pop(key)
             new_targets = []
             if targets:
@@ -130,12 +124,31 @@ def normalize_dict(ordered_dict):
             d[key + "s"] = new_targets
             key = key + "s"
 
+            # Also add a targets_by_type element to this dict
+            # to access the targets in a more convenient way.
+            d['targets_by_type'] = group_targets_by_type(new_targets)
+
         # Group all reports as a list of dicts under the key "pending_reports"
         if key == "pending_reports":
-            if isinstance(d[key], dict) and 'report_request_id' in d[key] \
-               and isinstance(d[key]['report_request_id'], list):
-                d['pending_reports'] = [{'request_id': rrid}
-                                        for rrid in d['pending_reports']['report_request_id']]
+            # If there are pending reports, turn them into a list of dicts,
+            # each with a single 'report_request_id' key.
+            if isinstance(d[key], dict) and 'report_request_id' in d[key]:
+
+                # If there is only one report_request_id, make sure it is
+                # turned into a list before further processing.
+                if not isinstance(d[key]['report_request_id'], list):
+                    d[key]['report_request_id'] = [d[key]['report_request_id']]
+
+                # When collecting the report_request_ids, make sure even numeric
+                # ids get turned into strings.
+                d[key] = [{'report_request_id': str(rrid)}
+                          for rrid in d[key]['report_request_id']
+                          if d[key]['report_request_id'] is not None]
+
+            # If there are no pending reports, make sure we get an empty list back
+            # so any iteration can proceed as normal.
+            elif d[key] is None:
+                d[key] = []
 
         # Group all events al a list of dicts under the key "events"
         elif key == "event" and isinstance(d[key], list):
@@ -170,41 +183,19 @@ def normalize_dict(ordered_dict):
                 descriptions = [descriptions]
             for description in descriptions:
                 # We want to make the identification of the measurement universal
-                if 'voltage' in description:
-                    item_name, item = 'voltage', description.pop('voltage')
-                elif 'power_real' in description:
-                    item_name, item = 'powerReal', description.pop('power_real')
-                elif 'power_apparent' in description:
-                    item_name, item = 'powerApparent', description.pop('power_apparent')
-                elif 'power_reactive' in description:
-                    item_name, item = 'powerReactive', description.pop('power_reactive')
-                elif 'energy_real' in description:
-                    item_name, item = 'energyReal', description.pop('energy_real')
-                elif 'energy_apparent' in description:
-                    item_name, item = 'energyApparent', description.pop('energy_apparent')
-                elif 'energy_reactive' in description:
-                    item_name, item = 'energyReactive', description.pop('energy_reactive')
-                elif 'frequency' in description:
-                    item_name, item = 'frequency', description.pop('frequency')
-                elif 'pulse_count' in description:
-                    item_name, item = 'pulseCount', description.pop('pulse_count')
-                elif 'temperature' in description:
-                    item_name, item = 'temperature', description.pop('temperature')
-                elif 'therm' in description:
-                    item_name, item = 'therm', description.pop('therm')
-                elif 'currency' in description:
-                    item_name, item = 'currency', description.pop('currency')
-                elif 'currency_per_kw' in description:
-                    item_name, item = 'currencyPerKW', description.pop('currency_per_kw')
-                elif 'currency_per_kwh' in description:
-                    item_name, item = 'currencyPerKWh', description.pop('currency_per_kwh')
-                elif 'currency_per_therm' in description:
-                    item_name, item = 'currencyPerTherm', description.pop('currency_per_therm')
-                elif 'custom_unit' in description:
-                    item_name, item = 'customUnit', description.pop('custom_unit')
+                for measurement in enums._MEASUREMENT_NAMESPACES:
+                    if measurement in description:
+                        name, item = measurement, description.pop(measurement)
+                        break
                 else:
                     break
-                description['measurement'] = {'item_name': item_name,
+                item['description'] = item.pop('item_description', None)
+                item['unit'] = item.pop('item_units', None)
+                if 'si_scale_code' in item:
+                    item['scale'] = item.pop('si_scale_code')
+                if 'pulse_factor' in item:
+                    item['pulse_factor'] = item.pop('pulse_factor')
+                description['measurement'] = {'name': name,
                                               **item}
             d[key + 's'] = descriptions
 
@@ -280,10 +271,15 @@ def parse_datetime(value):
     """
     matches = re.match(r'(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.?(\d{1,6})?\d*Z', value)
     if matches:
-        year, month, day, hour, minute, second, micro = (int(value) for value in matches.groups())
+        year, month, day, hour, minute, second = (int(value)for value in matches.groups()[:-1])
+        micro = matches.groups()[-1]
+        if micro is None:
+            micro = 0
+        else:
+            micro = int(micro + "0" * (6 - len(micro)))
         return datetime(year, month, day, hour, minute, second, micro, tzinfo=timezone.utc)
     else:
-        print(f"{value} did not match format")
+        logger.warning(f"parse_datetime: {value} did not match format")
         return value
 
 
@@ -291,43 +287,25 @@ def parse_duration(value):
     """
     Parse a RFC5545 duration.
     """
-    # TODO: implement the full regex:
-    # matches = re.match(r'(\+|\-)?P((\d+Y)?(\d+M)?(\d+D)?T?(\d+H)?(\d+M)?(\d+S)?)|(\d+W)', value)
     if isinstance(value, timedelta):
         return value
-    matches = re.match(r'P(\d+(?:D|W))?T?(\d+H)?(\d+M)?(\d+S)?', value)
+    regex = r'(\+|\-)?P(?:(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)|(?:(\d+)W)'
+    matches = re.match(regex, value)
     if not matches:
-        return False
-    days = hours = minutes = seconds = 0
-    _days, _hours, _minutes, _seconds = matches.groups()
-    if _days:
-        if _days.endswith("D"):
-            days = int(_days[:-1])
-        elif _days.endswith("W"):
-            days = int(_days[:-1]) * 7
-    if _hours:
-        hours = int(_hours[:-1])
-    if _minutes:
-        minutes = int(_minutes[:-1])
-    if _seconds:
-        seconds = int(_seconds[:-1])
-    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
-
-
-def parse_int(value):
-    matches = re.match(r'^[\d-]+$', value)
-    if not matches:
-        return False
-    else:
-        return int(value)
-
-
-def parse_float(value):
-    matches = re.match(r'^[\d.-]+$', value)
-    if not matches:
-        return False
-    else:
-        return float(value)
+        raise ValueError(f"The duration '{value}' did not match the requested format")
+    years, months, days, hours, minutes, seconds, weeks = (int(g) if g else 0 for g in matches.groups()[1:])
+    if years != 0:
+        logger.warning("Received a duration that specifies years, which is not a determinate duration. "
+                       "It will be interpreted as 1 year = 365 days.")
+        days = days + 365 * years
+    if months != 0:
+        logger.warning("Received a duration that specifies months, which is not a determinate duration "
+                       "It will be interpreted as 1 month = 30 days.")
+        days = days + 30 * months
+    duration = timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes, seconds=seconds)
+    if matches.groups()[0] == "-":
+        duration = -1 * duration
+    return duration
 
 
 def parse_boolean(value):
@@ -335,18 +313,6 @@ def parse_boolean(value):
         return True
     else:
         return False
-
-
-def peek(iterable):
-    """
-    Peek into an iterable.
-    """
-    try:
-        first = next(iterable)
-    except StopIteration:
-        return None
-    else:
-        return itertools.chain([first], iterable)
 
 
 def datetimeformat(value, format=DATETIME_FORMAT):
@@ -425,8 +391,8 @@ def ensure_str(obj):
 
 
 def certificate_fingerprint_from_der(der_bytes):
-    hash = hashlib.sha256(der_bytes).digest().hex()
-    return ":".join([hash[i-2:i].upper() for i in range(-20, 0, 2)])
+    hash_ = hashlib.sha256(der_bytes).digest().hex()
+    return ":".join([hash_[i:i+2].upper() for i in range(44, 64, 2)])
 
 
 def certificate_fingerprint(certificate_str):
@@ -447,12 +413,15 @@ def extract_pem_cert(tree):
                             part of the message.
     """
     cert = tree.find('.//{http://www.w3.org/2000/09/xmldsig#}X509Certificate').text
+    if not cert.endswith("\n"):
+        cert = cert + "\n"
     return "-----BEGIN CERTIFICATE-----\n" + cert + "-----END CERTIFICATE-----\n"
 
 
 def find_by(dict_or_list, key, value, *args):
     """
     Find a dict inside a dict or list by key, value properties.
+    You can search for a nesting by separating the levels with a period (.).
     """
     search_params = [(key, value)]
     if args:
@@ -460,16 +429,19 @@ def find_by(dict_or_list, key, value, *args):
     if isinstance(dict_or_list, dict):
         dict_or_list = dict_or_list.values()
     for item in dict_or_list:
-        if not isinstance(item, dict):
-            _item = item.__dict__
-        else:
-            _item = item
         for key, value in search_params:
+            _item = item
+            keys = key.split(".")
+            for key in keys[:-1]:
+                if not hasmember(_item, key):
+                    break
+                _item = getmember(_item, key)
+            key = keys[-1]
             if isinstance(value, tuple):
-                if _item[key] not in value:
+                if not hasmember(_item, key) or getmember(_item, key) not in value:
                     break
             else:
-                if _item[key] != value:
+                if not hasmember(_item, key) or getmember(_item, key) != value:
                     break
         else:
             return item
@@ -493,7 +465,18 @@ def group_by(list_, key, pop_key=False):
     return grouped
 
 
-def cron_config(interval):
+def pop_by(list_, key, value, *args):
+    """
+    Pop the first item that satisfies the search params from the given list.
+    """
+    item = find_by(list_, key, value, *args)
+    if item:
+        index = list_.index(item)
+        list_.pop(index)
+    return item
+
+
+def cron_config(interval, randomize_seconds=False):
     """
     Returns a dict with cron settings for the given interval
     """
@@ -503,13 +486,21 @@ def cron_config(interval):
         hour = "*"
     elif interval < timedelta(hours=1):
         second = "0"
-        minute = f"*/{int(interval.total_seconds/60)}"
+        minute = f"*/{int(interval.total_seconds()/60)}"
         hour = "*"
-    elif interval < timedelta(days=1):
+    elif interval < timedelta(hours=24):
         second = "0"
         minute = "0"
-        hour = f"*/{int(interval.total_seconds/3600)}"
-    return {"second": second, "minute": minute, "hour": hour}
+        hour = f"*/{int(interval.total_seconds()/3600)}"
+    else:
+        second = "0"
+        minute = "0"
+        hour = "0"
+    cron_config = {"second": second, "minute": minute, "hour": hour}
+    if randomize_seconds:
+        jitter = min(int(interval.total_seconds() / 10), 300)
+        cron_config['jitter'] = jitter
+    return cron_config
 
 
 def get_cert_fingerprint_from_request(request):
@@ -520,8 +511,319 @@ def get_cert_fingerprint_from_request(request):
             return certificate_fingerprint_from_der(der_bytes)
 
 
-def get_certificate_common_name(request):
-    cert = request.transport.get_extra_info('peercert')
-    if cert:
-        subject = dict(x[0] for x in cert['subject'])
-        return subject.get('commonName')
+def group_targets_by_type(list_of_targets):
+    targets_by_type = {}
+    for target in list_of_targets:
+        for key, value in target.items():
+            if value is None:
+                continue
+            if key not in targets_by_type:
+                targets_by_type[key] = []
+            targets_by_type[key].append(value)
+    return targets_by_type
+
+
+def ungroup_targets_by_type(targets_by_type):
+    ungrouped_targets = []
+    for target_type, targets in targets_by_type.items():
+        if isinstance(targets, list):
+            for target in targets:
+                ungrouped_targets.append({target_type: target})
+        elif isinstance(targets, str):
+            ungrouped_targets.append({target_type: targets})
+    return ungrouped_targets
+
+
+def validate_report_measurement_dict(measurement):
+    from openleadr.enums import _ACCEPTABLE_UNITS, _MEASUREMENT_DESCRIPTIONS
+
+    if 'name' not in measurement \
+            or 'description' not in measurement \
+            or 'unit' not in measurement:
+        raise ValueError("The measurement dict must contain the following keys: "
+                         "'name', 'description', 'unit'. Please correct this.")
+
+    name = measurement['name']
+    description = measurement['description']
+    unit = measurement['unit']
+
+    # Validate the item name and description match
+    if name in _MEASUREMENT_DESCRIPTIONS:
+        required_description = _MEASUREMENT_DESCRIPTIONS[name]
+        if description != required_description:
+            if description.lower() == required_description.lower():
+                logger.warning(f"The description for the measurement with name '{name}' "
+                               f"was not in the correct case; you provided '{description}' but "
+                               f"it should be '{required_description}'. "
+                               "This was automatically corrected.")
+                measurement['description'] = required_description
+            else:
+                raise ValueError(f"The measurement's description '{description}' "
+                                 f"did not match the expected description for this type "
+                                 f" ('{required_description}'). Please correct this, or use "
+                                 "'customUnit' as the name.")
+        if unit not in _ACCEPTABLE_UNITS[name]:
+            raise ValueError(f"The unit '{unit}' is not acceptable for measurement '{name}'. Allowed "
+                             f"units are: '" + "', '".join(_ACCEPTABLE_UNITS[name]) + "'.")
+    else:
+        if name != 'customUnit':
+            logger.warning(f"You provided a measurement with an unknown name {name}. "
+                           "This was corrected to 'customUnit'. Please correct this in your "
+                           "report definition.")
+            measurement['name'] = 'customUnit'
+
+    if 'power' in name:
+        if 'power_attributes' in measurement:
+            power_attributes = measurement['power_attributes']
+            if 'voltage' not in power_attributes \
+                    or 'ac' not in power_attributes \
+                    or 'hertz' not in power_attributes:
+                raise ValueError("The power_attributes of the measurement must contain the "
+                                 "following keys: 'voltage' (int), 'ac' (bool), 'hertz' (int).")
+        else:
+            raise ValueError("A 'power' related measurement must contain a "
+                             "'power_attributes' section that contains the following "
+                             "keys: 'voltage' (int), 'ac' (boolean), 'hertz' (int)")
+
+
+def get_active_period_from_intervals(intervals, as_dict=True):
+    if is_dataclass(intervals[0]):
+        intervals = [asdict(i) for i in intervals]
+    period_start = min([i['dtstart'] for i in intervals])
+    period_duration = max([i['dtstart'] + i['duration'] - period_start for i in intervals])
+    if as_dict:
+        return {'dtstart': period_start,
+                'duration': period_duration}
+    else:
+        from openleadr.objects import ActivePeriod
+        return ActivePeriod(dtstart=period_start, duration=period_duration)
+
+
+def determine_event_status(active_period):
+    now = datetime.now(timezone.utc)
+    active_period_start = getmember(active_period, 'dtstart')
+    if active_period_start.tzinfo is None:
+        active_period_start = active_period_start.astimezone(timezone.utc)
+        setmember(active_period, 'dtstart', active_period_start)
+    active_period_end = active_period_start + getmember(active_period, 'duration')
+    if now >= active_period_end:
+        return 'completed'
+    if now >= active_period_start:
+        return 'active'
+    if getmember(active_period, 'ramp_up_period', missing=None) is not None:
+        ramp_up_start = active_period_start - getmember(active_period, 'ramp_up_period')
+        if now >= ramp_up_start:
+            return 'near'
+    return 'far'
+
+
+def hasmember(obj, member):
+    """
+    Check if a dict or dataclass has the given member
+    """
+    if is_dataclass(obj):
+        if hasattr(obj, member):
+            return True
+    else:
+        if member in obj:
+            return True
+    return False
+
+
+def getmember(obj, member, missing='_RAISE_'):
+    """
+    Get a member from a dict or dataclass. Nesting is possible.
+    """
+    def getmember_inner(obj, member, missing='_RAISE_'):
+        if is_dataclass(obj):
+            if not missing == '_RAISE_' and not hasattr(obj, member):
+                return missing
+            else:
+                return getattr(obj, member)
+        else:
+            if missing == '_RAISE_':
+                return obj[member]
+            else:
+                return obj.get(member, missing)
+
+    for m in member.split("."):
+        obj = getmember_inner(obj, m, missing=missing)
+    return obj
+
+
+def setmember(obj, member, value):
+    """
+    Set a member of a dict of dataclass
+    """
+    if '.' in member:
+        members = member.split('.')
+        obj = getmember(obj, ".".join(members[:-1]))
+        member = members[-1]
+
+    if is_dataclass(obj):
+        setattr(obj, member, value)
+    else:
+        obj[member] = value
+
+
+def validate_report_request_tuples(list_of_report_requests, mode='full'):
+    if len(list_of_report_requests) == 0:
+        return
+    for report_requests in list_of_report_requests:
+        if report_requests is None:
+            continue
+        for i, rrq in enumerate(report_requests):
+            if rrq is None:
+                continue
+
+            # Check if it is a tuple
+            elif not isinstance(rrq, tuple):
+                report_requests[i] = None
+                if mode == 'full':
+                    logger.error("Your on_register_report handler did not return a list of tuples. "
+                                 f"The first item from the list was '{rrq}' ({rrq.__class__.__name__}).")
+                else:
+                    logger.error("Your on_register_report handler did not return a tuple. "
+                                 f"It returned '{rrq}'. Please see the documentation for the correct format.")
+
+            # Check if it has the correct length
+            elif not len(rrq) in (3, 4):
+                report_requests[i] = None
+                if mode == 'full':
+                    logger.error("Your on_register_report handler returned tuples of the wrong length. "
+                                 f"It should be 3 or 4. It returned: '{rrq}'.")
+                else:
+                    logger.error("Your on_register_report handler returned a tuple of the wrong length. "
+                                 f"It should be 2 or 3. It returned: '{rrq[1:]}'.")
+
+            # Check if the first element is callable
+            elif not callable(rrq[1]):
+                report_requests[i] = None
+                if mode == 'full':
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a list of (r_id, callback, sampling_interval) or "
+                                 "(r_id, callback, sampling_interval, reporting_interval) tuples, where "
+                                 "the r_id is a string, callback is a callable function or coroutine, and "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq}'. The second element was not callable.")
+                else:
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a (callback, sampling_interval) or "
+                                 "(callback, sampling_interval, reporting_interval) tuple, where "
+                                 "the callback is a callable function or coroutine, and "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq[1:]}'. The first element was not callable.")
+
+            # Check if the second element is a timedelta
+            elif not isinstance(rrq[2], timedelta):
+                report_requests[i] = None
+                if mode == 'full':
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a list of (r_id, callback, sampling_interval) or "
+                                 "(r_id, callback, sampling_interval, reporting_interval) tuples, where "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq}'. The third element was not of type timedelta.")
+                else:
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a (callback, sampling_interval) or "
+                                 "(callback, sampling_interval, reporting_interval) tuple, where "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq[1:]}'. The second element was not of type timedelta.")
+
+            # Check if the third element is a timedelta (if it exists)
+            elif len(rrq) == 4 and not isinstance(rrq[3], timedelta):
+                report_requests[i] = None
+                if mode == 'full':
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a list of (r_id, callback, sampling_interval) or "
+                                 "(r_id, callback, sampling_interval, reporting_interval) tuples, where "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq}'. The fourth element was not of type timedelta.")
+                else:
+                    logger.error(f"Your on_register_report handler did not return the correct tuple. "
+                                 "It should return a (callback, sampling_interval) or "
+                                 "(callback, sampling_interval, reporting_interval) tuple, where "
+                                 "sampling_interval and reporting_interval are of type datetime.timedelta. "
+                                 f"It returned: '{rrq[1:]}'. The third element was not of type timedelta.")
+
+
+async def await_if_required(result):
+    if asyncio.iscoroutine(result):
+        result = await result
+    return result
+
+
+async def gather_if_required(results):
+    if results is None:
+        return results
+    if len(results) > 0:
+        if not any([asyncio.iscoroutine(r) for r in results]):
+            results = results
+        elif all([asyncio.iscoroutine(r) for r in results]):
+            results = await asyncio.gather(*results)
+        else:
+            results = [await await_if_required(result) for result in results]
+    return results
+
+
+def order_events(events, limit=None, offset=None):
+    """
+    Order the events according to the OpenADR rules:
+    - active events before inactive events
+    - high priority before low priority
+    - earlier before later
+    """
+    def event_priority(event):
+        # The default and lowest priority is 0, which we should interpret as a high value.
+        priority = getmember(event, 'event_descriptor.priority', missing=float('inf'))
+        if priority == 0:
+            priority = float('inf')
+        return priority
+
+    if events is None:
+        return None
+    if isinstance(events, objects.Event):
+        events = [events]
+    elif isinstance(events, dict):
+        events = [events]
+
+    # Update the event statuses
+    for event in events:
+        if getmember(event, 'event_descriptor.event_status') != enums.EVENT_STATUS.CANCELLED:
+            event_status = determine_event_status(getmember(event, 'active_period'))
+            if getmember(event, 'event_descriptor.event_status') != event_status:
+                setmember(event, 'event_descriptor.event_status', event_status)
+                setmember(event, 'event_descriptor.created_date_time', datetime.now(timezone.utc))
+
+    # Short circuit if we only have one event:
+    if len(events) == 1:
+        return events
+
+    # Get all the active events first
+    active_events = [event for event in events
+                     if getmember(event, 'event_descriptor.event_status') == 'active']
+    other_events = [event for event in events
+                    if getmember(event, 'event_descriptor.event_status') != 'active']
+
+    # Sort the active events by priority
+    active_events.sort(key=lambda e: event_priority(e))
+
+    # Sort the active events by start date
+    active_events.sort(key=lambda e: getmember(e, 'active_period.dtstart'))
+
+    # Sort the non-active events by their start date
+    other_events.sort(key=lambda e: getmember(e, 'active_period.dtstart'))
+
+    ordered_events = active_events + other_events
+    if limit and offset:
+        return ordered_events[offset:offset+limit]
+    return ordered_events
+
+
+def increment_event_modification_number(event):
+    """
+    Increments the modification number of the event by 1 and returns the new modification number.
+    """
+    modification_number = getmember(event, 'event_descriptor.modification_number') + 1
+    setmember(event, 'event_descriptor.modification_number', modification_number)
+    return modification_number

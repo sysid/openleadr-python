@@ -14,9 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass, field, asdict, is_dataclass
+from typing import List, Dict
 from datetime import datetime, timezone, timedelta
+from openleadr import utils
+from openleadr import enums
 
 
 @dataclass
@@ -82,10 +84,15 @@ class Target:
     ven_id: str = None
     party_id: str = None
 
+    def __repr__(self):
+        targets = {key: value for key, value in asdict(self).items() if value is not None}
+        targets_str = ", ".join(f"{key}={value}" for key, value in targets.items())
+        return f"Target('{targets_str}')"
+
 
 @dataclass
 class EventDescriptor:
-    event_id: int
+    event_id: str
     modification_number: int
     market_context: str
     event_status: str
@@ -110,9 +117,9 @@ class ActivePeriod:
     dtstart: datetime
     duration: timedelta
     tolerance: dict = None
-    notification: dict = None
-    ramp_up: dict = None
-    recovery: dict = None
+    notification_period: dict = None
+    ramp_up_period: dict = None
+    recovery_period: dict = None
 
 
 @dataclass
@@ -121,42 +128,6 @@ class Interval:
     duration: timedelta
     signal_payload: float
     uid: int = None
-
-
-@dataclass
-class EventSignal:
-    intervals: List[Interval]
-    signal_name: str
-    signal_type: str
-    signal_id: str
-    current_value: float = None
-    targets: List[Target] = None
-
-
-@dataclass
-class Event:
-    event_descriptor: EventDescriptor
-    event_signals: List[EventSignal]
-    targets: List[Target]
-    active_period: ActivePeriod = None
-
-    def __post_init__(self):
-        if self.active_period is None:
-            dtstart = min([i['dtstart']
-                           if isinstance(i, dict) else i.dtstart
-                           for s in self.event_signals for i in s.intervals ])
-            duration = max([i['dtstart'] + i['duration']
-                            if isinstance(i, dict) else i.dtstart + i.duration
-                            for s in self.event_signals for i in s.intervals ]) - dtstart
-            self.active_period = ActivePeriod(dtstart=dtstart,
-                                              duration=duration)
-
-
-@dataclass
-class Response:
-    response_code: int
-    response_description: str
-    request_id: str
 
 
 @dataclass
@@ -175,20 +146,100 @@ class PowerAttributes:
 
 @dataclass
 class Measurement:
-    item_name: str
-    item_description: str
-    item_units: str
+    name: str
+    description: str
+    unit: str
     acceptable_units: List[str] = field(repr=False, default_factory=list)
-    si_scale_code: str = None
+    scale: str = None
     power_attributes: PowerAttributes = None
+    pulse_factor: int = None
+    ns: str = 'power'
 
     def __post_init__(self):
-        if self.item_name not in ('voltage', 'energyReal', 'energyReactive',
-                                  'energyApparent', 'powerReal', 'powerApparent',
-                                  'powerReactive', 'frequency',  'pulseCount', 'temperature',
-                                  'therm', 'currency', 'currencyPerKW', 'currencyPerKWh',
-                                  'currencyPerTherm'):
-            self.item_name = 'customUnit'
+        if self.name not in enums._MEASUREMENT_NAMESPACES:
+            self.name = 'customUnit'
+        self.ns = enums._MEASUREMENT_NAMESPACES[self.name]
+
+
+@dataclass
+class EventSignal:
+    intervals: List[Interval]
+    signal_name: str
+    signal_type: str
+    signal_id: str
+    current_value: float = None
+    targets: List[Target] = None
+    targets_by_type: Dict = None
+    measurement: Measurement = None
+
+    def __post_init__(self):
+        if self.signal_type not in enums.SIGNAL_TYPE.values:
+            raise ValueError(f"""The signal_type must be one of '{"', '".join(enums.SIGNAL_TYPE.values)}', """
+                             f"""you specified: '{self.signal_type}'.""")
+        if self.signal_name not in enums.SIGNAL_NAME.values and not self.signal_name.startswith('x-'):
+            raise ValueError(f"""The signal_name must be one of '{"', '".join(enums.SIGNAL_TYPE.values)}', """
+                             f"""or it must begin with 'x-'. You specified: '{self.signal_name}'""")
+        if self.targets is None and self.targets_by_type is None:
+            return
+        elif self.targets_by_type is None:
+            list_of_targets = [asdict(target) if is_dataclass(target) else target for target in self.targets]
+            targets_by_type = utils.group_targets_by_type(list_of_targets)
+            if len(targets_by_type) > 1:
+                raise ValueError("In OpenADR, the EventSignal target may only be of type endDeviceAsset. "
+                                 f"You provided types: '{', '.join(targets_by_type)}'")
+        elif self.targets is None:
+            self.targets = [Target(**target) for target in utils.ungroup_targets_by_type(self.targets_by_type)]
+        elif self.targets is not None and self.targets_by_type is not None:
+            list_of_targets = [asdict(target) if is_dataclass(target) else target for target in self.targets]
+            if utils.group_targets_by_type(list_of_targets) != self.targets_by_type:
+                raise ValueError("You assigned both 'targets' and 'targets_by_type' in your event, "
+                                 "but the two were not consistent with each other. "
+                                 f"You supplied 'targets' = {self.targets} and "
+                                 f"'targets_by_type' = {self.targets_by_type}")
+
+
+@dataclass
+class Event:
+    event_descriptor: EventDescriptor
+    event_signals: List[EventSignal]
+    targets: List[Target] = None
+    targets_by_type: Dict = None
+    active_period: ActivePeriod = None
+    response_required: str = 'always'
+
+    def __post_init__(self):
+        if self.active_period is None:
+            dtstart = min([i['dtstart']
+                           if isinstance(i, dict) else i.dtstart
+                           for s in self.event_signals for i in s.intervals])
+            duration = max([i['dtstart'] + i['duration']
+                            if isinstance(i, dict) else i.dtstart + i.duration
+                            for s in self.event_signals for i in s.intervals]) - dtstart
+            self.active_period = ActivePeriod(dtstart=dtstart,
+                                              duration=duration)
+        if self.targets is None and self.targets_by_type is None:
+            raise ValueError("You must supply either 'targets' or 'targets_by_type'.")
+        elif self.targets_by_type is None:
+            list_of_targets = [asdict(target) if is_dataclass(target) else target for target in self.targets]
+            self.targets_by_type = utils.group_targets_by_type(list_of_targets)
+        elif self.targets is None:
+            self.targets = [Target(**target) for target in utils.ungroup_targets_by_type(self.targets_by_type)]
+        elif self.targets is not None and self.targets_by_type is not None:
+            list_of_targets = [asdict(target) if is_dataclass(target) else target for target in self.targets]
+            if utils.group_targets_by_type(list_of_targets) != self.targets_by_type:
+                raise ValueError("You assigned both 'targets' and 'targets_by_type' in your event, "
+                                 "but the two were not consistent with each other. "
+                                 f"You supplied 'targets' = {self.targets} and "
+                                 f"'targets_by_type' = {self.targets_by_type}")
+        # Set the event status
+        self.event_descriptor.event_status = utils.determine_event_status(self.active_period)
+
+
+@dataclass
+class Response:
+    response_code: int
+    response_description: str
+    request_id: str
 
 
 @dataclass

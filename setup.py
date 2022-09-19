@@ -15,21 +15,20 @@
 # limitations under the License.
 
 from setuptools import setup
-import os
 
 with open('README.md', 'r') as fh:
     long_description = fh.read()
 
-with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'VERSION')) as file:
-    VERSION = file.read().strip()
-
 setup(name='openleadr',
-      version=VERSION,
-      description='Python library for dealing with OpenADR',
+      version='0.5.26',
+      description='Python3 library for building OpenADR Clients (VENs) and Servers (VTNs)',
       long_description=long_description,
       long_description_content_type='text/markdown',
-      url='https://openleadr.elaad.io',
+      url='https://openleadr.org',
+      project_urls={'GitHub': 'https://github.com/openleadr/openleadr-python',
+                    'Documentation': 'https://openleadr.org/docs'},
       packages=['openleadr', 'openleadr.service'],
+      python_requires='>=3.7.0',
       include_package_data=True,
       install_requires=['xmltodict', 'aiohttp', 'apscheduler', 'jinja2', 'signxml-openadr==2.9.1'],
       entry_points={'console_scripts': ['fingerprint = openleadr.fingerprint:show_fingerprint']})

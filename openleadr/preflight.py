@@ -16,7 +16,7 @@
 
 from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, is_dataclass
-from openleadr import enums
+from openleadr import enums, utils
 import logging
 logger = logging.getLogger('openleadr')
 
@@ -44,9 +44,25 @@ def preflight_message(message_type, message_payload):
 
 def _preflight_oadrRegisterReport(message_payload):
     for report in message_payload['reports']:
+        # Check that the report name is preceded by METADATA_ when registering reports
         if report['report_name'] in enums.REPORT_NAME.values \
                 and not report['report_name'].startswith("METADATA"):
             report['report_name'] = 'METADATA_' + report['report_name']
+
+        # Check that the measurement name and description match according to the schema
+        for report_description in report['report_descriptions']:
+            if 'measurement' in report_description and report_description['measurement'] is not None:
+                utils.validate_report_measurement_dict(report_description['measurement'])
+
+        # Add the correct namespace to the measurement
+        for report_description in report['report_descriptions']:
+            if 'measurement' in report_description and report_description['measurement'] is not None:
+                if report_description['measurement']['name'] in enums._MEASUREMENT_NAMESPACES:
+                    measurement_name = report_description['measurement']['name']
+                    measurement_ns = enums._MEASUREMENT_NAMESPACES[measurement_name]
+                    report_description['measurement']['ns'] = measurement_ns
+                else:
+                    raise ValueError("The Measurement Name is unknown")
 
 
 def _preflight_oadrDistributeEvent(message_payload):
@@ -92,6 +108,17 @@ def _preflight_oadrDistributeEvent(message_payload):
                                    "This will be corrected.")
                     event_signal['current_value'] = 0
 
+    # Add the correct namespace to the measurement
+    for event in message_payload['events']:
+        for event_signal in event['event_signals']:
+            if 'measurement' in event_signal and event_signal['measurement'] is not None:
+                if event_signal['measurement']['name'] in enums._MEASUREMENT_NAMESPACES:
+                    measurement_name = event_signal['measurement']['name']
+                    measurement_ns = enums._MEASUREMENT_NAMESPACES[measurement_name]
+                    event_signal['measurement']['ns'] = measurement_ns
+                else:
+                    raise ValueError("The Measurement Name is unknown")
+
     # Check that there is a valid oadrResponseRequired value for each Event
     for event in message_payload['events']:
         if 'response_required' not in event:
@@ -106,4 +133,17 @@ def _preflight_oadrDistributeEvent(message_payload):
     for event in message_payload['events']:
         if 'created_date_time' not in event['event_descriptor'] \
                 or not event['event_descriptor']['created_date_time']:
+            logger.warning("Your event descriptor did not contain a created_date_time. "
+                           "This will be automatically added.")
             event['event_descriptor']['created_date_time'] = datetime.now(timezone.utc)
+
+    # Check that the target designations are correct and consistent
+    for event in message_payload['events']:
+        if 'targets' in event and 'targets_by_type' in event:
+            if utils.group_targets_by_type(event['targets']) != event['targets_by_type']:
+                raise ValueError("You assigned both 'targets' and 'targets_by_type' in your event, "
+                                 "but the two were not consistent with each other. "
+                                 f"You supplied 'targets' = {event['targets']} and "
+                                 f"'targets_by_type' = {event['targets_by_type']}")
+        elif 'targets_by_type' in event and 'targets' not in event:
+            event['targets'] = utils.ungroup_targets_by_type(event['targets_by_type'])

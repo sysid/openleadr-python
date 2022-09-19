@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 import asyncio
 import sqlite3
 import pytest
+import pytest_asyncio
 from aiohttp import web
 import json
 
@@ -100,17 +101,12 @@ async def _on_create_party_registration(payload):
     return 'oadrCreatedPartyRegistration', payload
 
 
-server = OpenADRServer(vtn_id=VTN_ID)
+server = OpenADRServer(vtn_id=VTN_ID, http_port=SERVER_PORT)
 server.add_handler('on_create_party_registration', _on_create_party_registration)
 server.add_handler('on_poll', _on_poll)
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def start_server():
-    runner = web.AppRunner(server.app)
-    await runner.setup()
-    site = web.TCPSite(runner, 'localhost', SERVER_PORT)
-    await site.start()
-    print("SERVER IS NOW RUNNING")
+    await server.run_async()
     yield
-    print("SERVER IS NOW STOPPING")
-    await runner.cleanup()
+    await server.stop()

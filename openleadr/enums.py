@@ -18,7 +18,7 @@
 A collection of useful enumerations that you can use to construct or
 interpret OpenADR messages. Can also be useful during testing.
 """
-from openleadr import objects
+from openleadr.objects import Measurement, PowerAttributes
 
 
 class Enum(type):
@@ -54,7 +54,7 @@ class SIGNAL_TYPE(metaclass=Enum):
     SETPOINT = "setpoint"
     X_LOAD_CONTROL_CAPACITY = "x-loadControlCapacity"
     X_LOAD_CONTROL_LEVEL_OFFSET = "x-loadControlLevelOffset"
-    X_LOAD_CONTROL_PERCENT_OFFSET = "x-loadControlPorcentOffset"
+    X_LOAD_CONTROL_PERCENT_OFFSET = "x-loadControlPercentOffset"
     X_LOAD_CONTROL_SETPOINT = "x-loadControlSetpoint"
 
 
@@ -145,6 +145,31 @@ class REPORT_TYPE(metaclass=Enum):
     X_RESOURCE_STATUS = "x-resourceStatus"
 
 
+class SIGNAL_TARGET_MRID(metaclass=Enum):
+    THERMOSTAT = "Thermostat"
+    STRIP_HEATER = "Strip_Heater"
+    BASEBOARD_HEATER = "Baseboard_Heater"
+    WATER_HEATER = "Water_Heater"
+    POOL_PUMP = "Pool_Pump"
+    SAUNA = "Sauna"
+    HOT_TUB = "Hot_tub"
+    SMART_APPLIANCE = "Smart_Appliance"
+    IRRIGATION_PUMP = "Irrigation_Pump"
+    MANAGED_COMMERCIAL_AND_INDUSTRIAL_LOADS = "Managed_Commercial_and_Industrial_Loads"
+    SIMPLE_RESIDENTIAL_ON_OFF_LOADS = "Simple_Residential_On_Off_Loads"
+    EXTERIOR_LIGHTING = "Exterior_Lighting"
+    INTERIOR_LIGHTING = "Interior_Lighting"
+    ELECTRIC_VEHICLE = "Electric_Vehicle"
+    GENERATION_SYSTEMS = "Generation_Systems"
+    LOAD_CONTROL_SWITCH = "Load_Control_Switch"
+    SMART_INVERTER = "Smart_Inverter"
+    EVSE = "EVSE"
+    RESU = "RESU"
+    ENERGY_MANAGEMENT_SYSTEM = "Energy_Management_System"
+    SMART_ENERGY_MODULE = "Smart_Energy_Module"
+    STORAGE = "Storage"
+
+
 class REPORT_NAME(metaclass=Enum):
     METADATA_HISTORY_USAGE = "METADATA_HISTORY_USAGE"
     HISTORY_USAGE = "HISTORY_USAGE"
@@ -167,7 +192,7 @@ class STATUS_CODES(metaclass=Enum):
     REPORT_NOT_SUPPORTED = 461
     TARGET_MISMATCH = 462
     NOT_REGISTERED_OR_AUTHORIZED = 463
-    DEPLOYMENT_ERROR_OTHER = 469
+    DEPLOYMENT_ERROR_OR_OTHER_ERROR = 469
 
 
 class SECURITY_LEVEL:
@@ -195,146 +220,198 @@ _CURRENCIES = ("AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "B
                "XFU", "XOF", "XPD", "XPF", "XPF", "XPF", "XPT", "XTS", "XXX", "YER",
                "ZAR", "ZMK", "ZWL")
 
+_ACCEPTABLE_UNITS = {'currency': _CURRENCIES,
+                     'currencyPerKW': _CURRENCIES,
+                     'currencyPerKWh': _CURRENCIES,
+                     'currencyPerThm': _CURRENCIES,
+                     'current': ('A',),
+                     'energyApparent': ('VAh',),
+                     'energyReactive': ('VARh',),
+                     'energyReal': ('Wh',),
+                     'frequency': ('Hz',),
+                     'powerApparent': ('VA',),
+                     'powerReactive': ('VAR',),
+                     'powerReal': ('W',),
+                     'pulseCount': ('count',),
+                     'temperature': ('celsius', 'fahrenheit'),
+                     'Therm': ('thm',),
+                     'voltage': ('V',)}
+
+_MEASUREMENT_DESCRIPTIONS = {'currency': 'currency',
+                             'currencyPerKW': 'currencyPerKW',
+                             'currencyPerKWh': 'currencyPerKWh',
+                             'currencyPerThm': 'currency',
+                             'current': 'Current',
+                             'energyApparent': 'ApparentEnergy',
+                             'energyReactive': 'ReactiveEnergy',
+                             'energyReal': 'RealEnergy',
+                             'frequency': 'Frequency',
+                             'powerApparent': 'ApparentPower',
+                             'powerReactive': 'ReactivePower',
+                             'powerReal': 'RealPower',
+                             'pulseCount': 'pulse count',
+                             'temperature': 'temperature',
+                             'Therm': 'Therm',
+                             'voltage': 'Voltage'}
+
+_MEASUREMENT_NAMESPACES = {'currency': 'oadr',
+                           'currencyPerWK': 'oadr',
+                           'currencyPerKWh': 'oadr',
+                           'currencyPerThm': 'oadr',
+                           'current': 'oadr',
+                           'energyApparent': 'power',
+                           'energyReactive': 'power',
+                           'energyReal': 'power',
+                           'frequency': 'oadr',
+                           'powerApparent': 'power',
+                           'powerReactive': 'power',
+                           'powerReal': 'power',
+                           'pulseCount': 'oadr',
+                           'temperature': 'oadr',
+                           'Therm': 'oadr',
+                           'voltage': 'power',
+                           'customUnit': 'oadr'}
+
 
 class MEASUREMENTS(metaclass=Enum):
-    VOLTAGE = objects.Measurement(item_name='voltage',
-                                  item_description='Voltage',
-                                  item_units='V',
-                                  acceptable_units=('V',),
-                                  si_scale_code='none')
-    # CURRENT = objects.Measurement(item_name='current',
-    #                               item_description='Current',
-    #                               item_units='A',
-    #                               acceptable_units=('A',),
-    #                               si_scale_code='none')
-    ENERGY_REAL = objects.Measurement(item_name='energyReal',
-                                      item_description='RealEnergy',
-                                      item_units='Wh',
-                                      acceptable_units=('Wh',),
-                                      si_scale_code='none')
-    REAL_ENERGY = objects.Measurement(item_name='energyReal',
-                                      item_description='RealEnergy',
-                                      item_units='Wh',
-                                      acceptable_units=('Wh',),
-                                      si_scale_code='none')
-    ACTIVE_ENERGY = objects.Measurement(item_name='energyReal',
-                                        item_description='RealEnergy',
-                                        item_units='Wh',
-                                        acceptable_units=('Wh',),
-                                        si_scale_code='none')
-    ENERGY_REACTIVE = objects.Measurement(item_name='energyReal',
-                                          item_description='RealEnergy',
-                                          item_units='VArh',
-                                          acceptable_units=('VArh',),
-                                          si_scale_code='none')
-    REACTIVE_ENERGY = objects.Measurement(item_name='energyReal',
-                                          item_description='RealEnergy',
-                                          item_units='VArh',
-                                          acceptable_units=('VArh',),
-                                          si_scale_code='none')
-    ENERGY_APPARENT = objects.Measurement(item_name='energyReal',
-                                          item_description='ApparentEnergy',
-                                          item_units='VAh',
-                                          acceptable_units=('VAh',),
-                                          si_scale_code='none')
-    APPARENT_ENERGY = objects.Measurement(item_name='energyReal',
-                                          item_description='ApparentEnergy',
-                                          item_units='VAh',
-                                          acceptable_units=('VAh',),
-                                          si_scale_code='none')
-    ACTIVE_POWER = objects.Measurement(item_name='powerReal',
-                                       item_description='RealPower',
-                                       item_units='W',
-                                       acceptable_units=('W',),
-                                       si_scale_code='none',
-                                       power_attributes=objects.PowerAttributes(hertz=50,
-                                                                                voltage=230,
-                                                                                ac=True))
-    REAL_POWER = objects.Measurement(item_name='powerReal',
-                                     item_description='RealPower',
-                                     item_units='W',
-                                     acceptable_units=('W',),
-                                     si_scale_code='none',
-                                     power_attributes=objects.PowerAttributes(hertz=50,
-                                                                              voltage=230,
-                                                                              ac=True))
-    POWER_REAL = objects.Measurement(item_name='powerReal',
-                                     item_description='RealPower',
-                                     item_units='W',
-                                     acceptable_units=('W',),
-                                     si_scale_code='none',
-                                     power_attributes=objects.PowerAttributes(hertz=50,
-                                                                              voltage=230,
-                                                                              ac=True))
-    REACTIVE_POWER = objects.Measurement(item_name='powerReactive',
-                                         item_description='ReactivePower',
-                                         item_units='VAr',
-                                         acceptable_units=('VAr',),
-                                         si_scale_code='none',
-                                         power_attributes=objects.PowerAttributes(hertz=50,
-                                                                                  voltage=230,
-                                                                                  ac=True))
-    POWER_REACTIVE = objects.Measurement(item_name='powerReactive',
-                                         item_description='ReactivePower',
-                                         item_units='VAr',
-                                         acceptable_units=('VAr',),
-                                         si_scale_code='none',
-                                         power_attributes=objects.PowerAttributes(hertz=50,
-                                                                                  voltage=230,
-                                                                                  ac=True))
-    APPARENT_POWER = objects.Measurement(item_name='powerApparent',
-                                         item_description='ApparentPower',
-                                         item_units='VA',
-                                         acceptable_units=('VA',),
-                                         si_scale_code='none',
-                                         power_attributes=objects.PowerAttributes(hertz=50,
-                                                                                  voltage=230,
-                                                                                  ac=True))
-    POWER_APPARENT = objects.Measurement(item_name='powerApparent',
-                                         item_description='ApparentPower',
-                                         item_units='VA',
-                                         acceptable_units=('VA',),
-                                         si_scale_code='none',
-                                         power_attributes=objects.PowerAttributes(hertz=50,
-                                                                                  voltage=230,
-                                                                                  ac=True))
-    FREQUENCY = objects.Measurement(item_name='frequency',
-                                    item_description='Frequency',
-                                    item_units='Hz',
-                                    acceptable_units=('Hz',),
-                                    si_scale_code='none')
-    PULSE_COUNT = objects.Measurement(item_name='pulseCount',
-                                      item_description='pulse count',
-                                      item_units='count',
-                                      acceptable_units=('count',),
-                                      si_scale_code='none')
-    TEMPERATURE = objects.Measurement(item_name='temperature',
-                                      item_description='temperature',
-                                      item_units='celsius',
-                                      acceptable_units=('celsius', 'fahrenheit'),
-                                      si_scale_code='none')
-    THERM = objects.Measurement(item_name='therm',
-                                item_description='Therm',
-                                item_units='thm',
-                                acceptable_units=('thm',),
-                                si_scale_code='none')
-    CURRENCY = objects.Measurement(item_name='currency',
-                                   item_description='Currency',
-                                   item_units='USD',
+    VOLTAGE = Measurement(name='voltage',
+                          description=_MEASUREMENT_DESCRIPTIONS['voltage'],
+                          unit=_ACCEPTABLE_UNITS['voltage'][0],
+                          acceptable_units=_ACCEPTABLE_UNITS['voltage'],
+                          scale='none')
+    CURRENT = Measurement(name='current',
+                          description=_MEASUREMENT_DESCRIPTIONS['current'],
+                          unit=_ACCEPTABLE_UNITS['current'][0],
+                          acceptable_units=_ACCEPTABLE_UNITS['current'],
+                          scale='none')
+    ENERGY_REAL = Measurement(name='energyReal',
+                              description=_MEASUREMENT_DESCRIPTIONS['energyReal'],
+                              unit=_ACCEPTABLE_UNITS['energyReal'][0],
+                              acceptable_units=_ACCEPTABLE_UNITS['energyReal'],
+                              scale='none')
+    REAL_ENERGY = Measurement(name='energyReal',
+                              description=_MEASUREMENT_DESCRIPTIONS['energyReal'],
+                              unit=_ACCEPTABLE_UNITS['energyReal'][0],
+                              acceptable_units=_ACCEPTABLE_UNITS['energyReal'],
+                              scale='none')
+    ACTIVE_ENERGY = Measurement(name='energyReal',
+                                description=_MEASUREMENT_DESCRIPTIONS['energyReal'],
+                                unit=_ACCEPTABLE_UNITS['energyReal'][0],
+                                acceptable_units=_ACCEPTABLE_UNITS['energyReal'],
+                                scale='none')
+    ENERGY_REACTIVE = Measurement(name='energyReactive',
+                                  description=_MEASUREMENT_DESCRIPTIONS['energyReactive'],
+                                  unit=_ACCEPTABLE_UNITS['energyReactive'][0],
+                                  acceptable_units=_ACCEPTABLE_UNITS['energyReactive'],
+                                  scale='none')
+    REACTIVE_ENERGY = Measurement(name='energyReactive',
+                                  description=_MEASUREMENT_DESCRIPTIONS['energyReactive'],
+                                  unit=_ACCEPTABLE_UNITS['energyReactive'][0],
+                                  acceptable_units=_ACCEPTABLE_UNITS['energyReactive'],
+                                  scale='none')
+    ENERGY_APPARENT = Measurement(name='energyApparent',
+                                  description=_MEASUREMENT_DESCRIPTIONS['energyApparent'],
+                                  unit=_ACCEPTABLE_UNITS['energyApparent'][0],
+                                  acceptable_units=_ACCEPTABLE_UNITS['energyApparent'],
+                                  scale='none')
+    APPARENT_ENERGY = Measurement(name='energyApparent',
+                                  description=_MEASUREMENT_DESCRIPTIONS['energyApparent'],
+                                  unit=_ACCEPTABLE_UNITS['energyApparent'][0],
+                                  acceptable_units=_ACCEPTABLE_UNITS['energyApparent'],
+                                  scale='none')
+    ACTIVE_POWER = Measurement(name='powerReal',
+                               description=_MEASUREMENT_DESCRIPTIONS['powerReal'],
+                               unit=_ACCEPTABLE_UNITS['powerReal'][0],
+                               acceptable_units=_ACCEPTABLE_UNITS['powerReal'],
+                               scale='none',
+                               power_attributes=PowerAttributes(hertz=50,
+                                                                voltage=230,
+                                                                ac=True))
+    REAL_POWER = Measurement(name='powerReal',
+                             description=_MEASUREMENT_DESCRIPTIONS['powerReal'],
+                             unit=_ACCEPTABLE_UNITS['powerReal'][0],
+                             acceptable_units=_ACCEPTABLE_UNITS['powerReal'],
+                             scale='none',
+                             power_attributes=PowerAttributes(hertz=50,
+                                                              voltage=230,
+                                                              ac=True))
+    POWER_REAL = Measurement(name='powerReal',
+                             description=_MEASUREMENT_DESCRIPTIONS['powerReal'],
+                             unit=_ACCEPTABLE_UNITS['powerReal'][0],
+                             acceptable_units=_ACCEPTABLE_UNITS['powerReal'],
+                             scale='none',
+                             power_attributes=PowerAttributes(hertz=50,
+                                                              voltage=230,
+                                                              ac=True))
+    REACTIVE_POWER = Measurement(name='powerReactive',
+                                 description=_MEASUREMENT_DESCRIPTIONS['powerReactive'],
+                                 unit=_ACCEPTABLE_UNITS['powerReactive'][0],
+                                 acceptable_units=_ACCEPTABLE_UNITS['powerReactive'],
+                                 scale='none',
+                                 power_attributes=PowerAttributes(hertz=50,
+                                                                  voltage=230,
+                                                                  ac=True))
+    POWER_REACTIVE = Measurement(name='powerReactive',
+                                 description=_MEASUREMENT_DESCRIPTIONS['powerReactive'],
+                                 unit=_ACCEPTABLE_UNITS['powerReactive'][0],
+                                 acceptable_units=_ACCEPTABLE_UNITS['powerReactive'],
+                                 scale='none',
+                                 power_attributes=PowerAttributes(hertz=50,
+                                                                  voltage=230,
+                                                                  ac=True))
+    APPARENT_POWER = Measurement(name='powerApparent',
+                                 description=_MEASUREMENT_DESCRIPTIONS['powerApparent'],
+                                 unit=_ACCEPTABLE_UNITS['powerApparent'][0],
+                                 acceptable_units=_ACCEPTABLE_UNITS['powerApparent'],
+                                 scale='none',
+                                 power_attributes=PowerAttributes(hertz=50,
+                                                                  voltage=230,
+                                                                  ac=True))
+    POWER_APPARENT = Measurement(name='powerApparent',
+                                 description=_MEASUREMENT_DESCRIPTIONS['powerApparent'],
+                                 unit=_ACCEPTABLE_UNITS['powerApparent'][0],
+                                 acceptable_units=_ACCEPTABLE_UNITS['powerApparent'],
+                                 scale='none',
+                                 power_attributes=PowerAttributes(hertz=50,
+                                                                  voltage=230,
+                                                                  ac=True))
+    FREQUENCY = Measurement(name='frequency',
+                            description=_MEASUREMENT_DESCRIPTIONS['frequency'],
+                            unit=_ACCEPTABLE_UNITS['frequency'][0],
+                            acceptable_units=_ACCEPTABLE_UNITS['frequency'],
+                            scale='none')
+    PULSE_COUNT = Measurement(name='pulseCount',
+                              description=_MEASUREMENT_DESCRIPTIONS['pulseCount'],
+                              unit=_ACCEPTABLE_UNITS['pulseCount'][0],
+                              acceptable_units=_ACCEPTABLE_UNITS['pulseCount'],
+                              pulse_factor=1000)
+    TEMPERATURE = Measurement(name='temperature',
+                              description=_MEASUREMENT_DESCRIPTIONS['temperature'],
+                              unit=_ACCEPTABLE_UNITS['temperature'][0],
+                              acceptable_units=_ACCEPTABLE_UNITS['temperature'],
+                              scale='none')
+    THERM = Measurement(name='Therm',
+                        description=_MEASUREMENT_DESCRIPTIONS['Therm'],
+                        unit=_ACCEPTABLE_UNITS['Therm'][0],
+                        acceptable_units=_ACCEPTABLE_UNITS['Therm'],
+                        scale='none')
+    CURRENCY = Measurement(name='currency',
+                           description=_MEASUREMENT_DESCRIPTIONS['currency'],
+                           unit=_CURRENCIES[0],
+                           acceptable_units=_CURRENCIES,
+                           scale='none')
+    CURRENCY_PER_KW = Measurement(name='currencyPerKW',
+                                  description=_MEASUREMENT_DESCRIPTIONS['currencyPerKW'],
+                                  unit=_CURRENCIES[0],
+                                  acceptable_units=_CURRENCIES,
+                                  scale='none')
+    CURRENCY_PER_KWH = Measurement(name='currencyPerKWh',
+                                   description=_MEASUREMENT_DESCRIPTIONS['currencyPerKWh'],
+                                   unit=_CURRENCIES[0],
                                    acceptable_units=_CURRENCIES,
-                                   si_scale_code='none')
-    CURRENCY_PER_KW = objects.Measurement(item_name='currencyPerKW',
-                                          item_description='CurrencyPerKW',
-                                          item_units='USD',
-                                          acceptable_units=_CURRENCIES,
-                                          si_scale_code='none')
-    CURRENCY_PER_KWH = objects.Measurement(item_name='currencyPerKWh',
-                                           item_description='CurrencyPerKWh',
-                                           item_units='USD',
-                                           acceptable_units=_CURRENCIES,
-                                           si_scale_code='none')
-    CURRENCY_PER_THERM = objects.Measurement(item_name='currencyPerTherm',
-                                             item_description='CurrencyPerTherm',
-                                             item_units='USD',
-                                             acceptable_units=_CURRENCIES,
-                                             si_scale_code='none')
+                                   scale='none')
+    CURRENCY_PER_THM = Measurement(name='currencyPerThm',
+                                   description=_MEASUREMENT_DESCRIPTIONS['currencyPerThm'],
+                                   unit=_CURRENCIES[0],
+                                   acceptable_units=_CURRENCIES,
+                                   scale='none')

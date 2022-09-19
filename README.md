@@ -1,4 +1,9 @@
-![OpenLEADR](logo.png)
+![Test Suite](https://github.com/OpenLEADR/openleadr-python/workflows/Test%20Suite/badge.svg)
+ [![Test Coverage](https://openleadr.org/coverage/badge.svg)](https://openleadr.org/coverage)
+ ![PyPI Downloads](https://img.shields.io/pypi/dm/openleadr?color=lightblue&label=PyPI%20Downloads)
+ [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4317/badge)](https://bestpractices.coreinfrastructure.org/projects/4317)
+
+![OpenLEADR](https://openleadr.org/images/lf-logo.png)
 
 OpenLEADR is a Python 3 module that provides a convenient interface to OpenADR
 systems. It contains an OpenADR Client that you can use to talk to other OpenADR
@@ -7,12 +12,18 @@ possibilities.
 
 It currently implements the OpenADR 2.0b specification.
 
-[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/4317/badge)](https://bestpractices.coreinfrastructure.org/projects/4317)
-
 ## Documentation
 
 You can find documentation here: https://openleadr.org/docs.
 
+
+## Credits
+
+OpenLEADR would not have been possible without the support from ElaadNL Foundation and the Linux Foundation Energy. Click the logos below to learn more about them.
+
+[![ElaadNL Logo](https://openleadr.org/images/elaad-logo.png)](https://elaad.nl)
+
+[![LF Energy Logo](https://openleadr.org/images/lf-energy-logo.png)](https://lfenergy.org)
 
 ## Contributing
 
@@ -67,3 +78,24 @@ To run the test suite, you can use the following command:
 ./python_env/bin/python3 -m pytest -v test/
 ```
 
+## Contributing Documentation
+
+### Building the documentation
+
+Static documentation can be found in the docs directory. Edit or create new .rst files to add new content using 
+the [Restructured Text](http://docutils.sourceforge.net/docs/user/rst/quickref.html) format. To see the results of your changes,
+the documentation can be built locally through the command line using the following instructions:
+
+```bash
+# Ensure that you follow the development setup in the Developing section above before running the following commands
+# After running this these commands, you should see a new directory `docs/_build`, which contains the HTML documentation. 
+# For more details, see https://www.sphinx-doc.org/en/master/tutorial/first-steps.html  
+cd docs
+make html
+```
+
+Then, open your browser to the created local files:
+
+```
+file:///home/<USER>/openleadr-python/docs/_build/html/index.html
+```

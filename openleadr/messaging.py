@@ -20,7 +20,6 @@ from jinja2 import Environment, PackageLoader
 from signxml import XMLSigner, XMLVerifier, methods
 from uuid import uuid4
 from lxml.etree import Element
-from asyncio import iscoroutine
 from openleadr import errors
 from datetime import datetime, timezone, timedelta
 import os
@@ -50,13 +49,20 @@ def parse_message(data):
 
     Returns a message type (str) and a message payload (dict)
     """
+    try:
+        if isinstance(data, bytes):
+            logger.debug(f"Parsing message: {data.decode('utf-8')}")
+        else:
+            logger.debug(f"Parsing message: {data}")
+    except UnicodeDecodeError:
+        logger.warning(f"Could not decode incoming message as UTF-8: {str(data)}")
     message_dict = xmltodict.parse(data, process_namespaces=True, namespaces=NAMESPACES)
     message_type, message_payload = message_dict['oadrPayload']['oadrSignedObject'].popitem()
     message_payload = utils.normalize_dict(message_payload)
     return message_type, message_payload
 
 
-def create_message(message_type, cert=None, key=None, passphrase=None, **message_payload):
+def create_message(message_type, cert=None, key=None, passphrase=None, disable_signature=False, **message_payload):
     """
     Create and optionally sign an OpenADR message. Returns an XML string.
     """
@@ -64,7 +70,7 @@ def create_message(message_type, cert=None, key=None, passphrase=None, **message
     template = TEMPLATES.get_template(f'{message_type}.xml')
     signed_object = utils.flatten_xml(template.render(**message_payload))
     envelope = TEMPLATES.get_template('oadrPayload.xml')
-    if cert and key:
+    if cert and key and not disable_signature:
         tree = etree.fromstring(signed_object)
         signature_tree = SIGNER.sign(tree,
                                      key=key,
@@ -75,10 +81,10 @@ def create_message(message_type, cert=None, key=None, passphrase=None, **message
         signature = etree.tostring(signature_tree).decode('utf-8')
     else:
         signature = None
-
     msg = envelope.render(template=f'{message_type}',
                           signature=signature,
                           signed_object=signed_object)
+    logger.debug(f"Created message: {msg}")
     return msg
 
 
@@ -86,35 +92,50 @@ def validate_xml_schema(content):
     """
     Validates the XML tree against the schema. Return the XML tree.
     """
-    try:
-        tree = etree.fromstring(content, XML_PARSER)
-    except Exception as err:
-        logger.warning(f"XML Validation error in incoming message: {err}")
-    else:
-        return tree
+    if isinstance(content, str):
+        content = content.encode('utf-8')
+    tree = etree.fromstring(content, XML_PARSER)
+    return tree
 
 
-def validate_xml_signature(xml_tree):
+def validate_xml_signature(xml_tree, cert_fingerprint=None):
+    """
+    Validate the XMLDSIG signature and the ReplayProtect element.
+    """
     cert = utils.extract_pem_cert(xml_tree)
+    if cert_fingerprint:
+        fingerprint = utils.certificate_fingerprint(cert)
+        if fingerprint != cert_fingerprint:
+            raise errors.FingerprintMismatch("The certificate fingerprint was incorrect. "
+                                             f"Expected: {cert_fingerprint}; "
+                                             f"Received: {fingerprint}. Ignoring message.")
     VERIFIER.verify(xml_tree, x509_cert=utils.ensure_bytes(cert), expect_references=2)
     _verify_replay_protect(xml_tree)
 
 
-async def authenticate_message(request, message_tree, message_payload, fingerprint_lookup):
+def validate_xml_signature_none(xml_tree):
+    assert xml_tree.find('.//{http://www.w3.org/2000/09/xmldsig#}X509Certificate') is None
+
+
+async def authenticate_message(request, message_tree, message_payload, fingerprint_lookup=None, ven_lookup=None):
     if request.secure and 'ven_id' in message_payload:
-        print("Getting cert fingerprint from request")
         connection_fingerprint = utils.get_cert_fingerprint_from_request(request)
-        print("Checking cert fingerprint")
         if connection_fingerprint is None:
             msg = ("Your request must use a client side SSL certificate, of which the "
-                   "fingerprint must match the fingerprint that you have given to this VTN")
+                   "fingerprint must match the fingerprint that you have given to this VTN.")
             raise errors.NotRegisteredOrAuthorizedError(msg)
 
         try:
             ven_id = message_payload.get('ven_id')
-            expected_fingerprint = fingerprint_lookup(ven_id)
-            if iscoroutine(expected_fingerprint):
-                expected_fingerprint = await expected_fingerprint
+            if fingerprint_lookup:
+                expected_fingerprint = await utils.await_if_required(fingerprint_lookup(ven_id))
+                if not expected_fingerprint:
+                    raise ValueError
+            elif ven_lookup:
+                ven_info = await utils.await_if_required(ven_lookup(ven_id))
+                if not ven_info:
+                    raise ValueError
+                expected_fingerprint = ven_info.get('fingerprint')
         except ValueError:
             msg = (f"Your venID {ven_id} is not known to this VTN. Make sure you use the venID "
                    "that you receive from this VTN during the registration step")
@@ -126,13 +147,11 @@ async def authenticate_message(request, message_tree, message_payload, fingerpri
                    "following fingerprint to make this request:")
             raise errors.NotRegisteredOrAuthorizedError(msg)
 
-        print("Checking connection fingerprint")
         if connection_fingerprint != expected_fingerprint:
-            msg = (f"The fingerprint of your HTTPS certificate {connection_fingerprint} "
-                   f"does not match the expected fingerprint {expected_fingerprint}")
+            msg = (f"The fingerprint of your HTTPS certificate '{connection_fingerprint}' "
+                   f"does not match the expected fingerprint '{expected_fingerprint}'")
             raise errors.NotRegisteredOrAuthorizedError(msg)
 
-        print("Checking message fingerprint")
         message_cert = utils.extract_pem_cert(message_tree)
         message_fingerprint = utils.certificate_fingerprint(message_cert)
         if message_fingerprint != expected_fingerprint:
@@ -142,7 +161,6 @@ async def authenticate_message(request, message_tree, message_payload, fingerpri
                    "certificate to sign your messages.")
             raise errors.NotRegisteredOrAuthorizedError(msg)
 
-        print("Validating XML signature")
         try:
             validate_xml_signature(message_tree)
         except ValueError:
@@ -174,6 +192,8 @@ def _verify_replay_protect(xml_tree):
     except Exception:
         raise ValueError("Missing or malformed ReplayProtect element in the message signature.")
     else:
+        if nonce is None:
+            raise ValueError("Missing 'nonce' element in ReplayProtect in incoming message.")
         if timestamp < datetime.now(timezone.utc) - REPLAY_PROTECT_MAX_TIME_DELTA:
             raise ValueError("The message was signed too long ago.")
         elif (timestamp, nonce) in NONCE_CACHE:
@@ -182,10 +202,10 @@ def _verify_replay_protect(xml_tree):
 
 
 def _update_nonce_cache(timestamp, nonce):
+    NONCE_CACHE.add((timestamp, nonce))
     for timestamp, nonce in list(NONCE_CACHE):
         if timestamp < datetime.now(timezone.utc) - REPLAY_PROTECT_MAX_TIME_DELTA:
             NONCE_CACHE.remove((timestamp, nonce))
-    NONCE_CACHE.add((timestamp, nonce))
 
 
 # Replay protect settings

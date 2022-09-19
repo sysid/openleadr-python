@@ -14,13 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from openleadr.utils import generate_id
-from openleadr.messaging import create_message, parse_message
+from openleadr.utils import generate_id, group_targets_by_type
+from openleadr.messaging import create_message, parse_message, validate_xml_schema
 from openleadr import enums
 from pprint import pprint
 from termcolor import colored
 from datetime import datetime, timezone, timedelta
 import pytest
+from pprint import pprint, pformat
+from lxml import etree
+from dataclasses import asdict
+import re
 
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -55,34 +59,62 @@ def create_dummy_event(ven_id):
                     "signal_name": "LOAD_CONTROL",
                     "signal_type": "x-loadControlCapacity",
                     "signal_id": generate_id(),
-                    "measurement": {"item_name": "voltage",
-                                    "item_description": "voltage",
-                                    "item_units": "V",
-                                    "si_scale_code": "none"},
+                    "measurement": {"name": "voltage",
+                                    "description": "Voltage",
+                                    "unit": "V",
+                                    "scale": "none"},
                     "current_value": 0.0}]
     event_targets = [{"ven_id": 'VEN001'}, {"ven_id": 'VEN002'}]
     event = {'active_period': active_period,
              'event_descriptor': event_descriptor,
              'event_signals': event_signals,
              'targets': event_targets,
+             'targets_by_type': group_targets_by_type(event_targets),
              'response_required': 'always'}
     return event
+
+reports = [{'duration': timedelta(seconds=3600),
+            'report_descriptions': [{'r_id': generate_id(),
+                                     'report_subject': {'end_device_asset': {'mrid': 'meter001'}},
+                                     'report_data_source': {'resource_id': 'resource001'},
+                                     'report_type': 'usage',
+                                     'measurement': asdict(measurement),
+                                     'reading_type': 'Direct Read',
+                                     'market_context': 'http://MarketContext1',
+                                     'sampling_rate': {'min_period': timedelta(seconds=10), 'max_period': timedelta(seconds=30), 'on_change': False}} for measurement in enums.MEASUREMENTS.values],
+            'report_specifier_id': generate_id(),
+            'report_name': 'METADATA_HISTORY_USAGE',
+            'report_request_id': 0,
+            'created_date_time': datetime.now(timezone.utc)}]
+
+for report in reports:
+  for rd in report['report_descriptions']:
+    rd['measurement'].pop('acceptable_units')
+    rd['measurement'].pop('ns')
+    if rd['measurement']['power_attributes'] is None:
+      rd['measurement'].pop('power_attributes')
+    if rd['measurement']['scale'] is None:
+      rd['measurement'].pop('scale')
+    if rd['measurement']['pulse_factor'] is None:
+      rd['measurement'].pop('pulse_factor')
 
 testcases = [
 ('oadrCanceledOpt', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, opt_id=generate_id())),
 ('oadrCanceledPartyRegistration', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, registration_id=generate_id(), ven_id='123ABC')),
-('oadrCanceledReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'request_id': generate_id()}, {'request_id': generate_id()}])),
-('oadrCanceledReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'request_id': generate_id()}, {'request_id': generate_id()}], ven_id='123ABC')),
+('oadrCanceledReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'report_request_id': generate_id()}, {'report_request_id': generate_id()}], ven_id='123ABC')),
 ('oadrCancelOpt', dict(request_id=generate_id(), ven_id='123ABC', opt_id=generate_id())),
 ('oadrCancelPartyRegistration', dict(request_id=generate_id(), ven_id='123ABC', registration_id=generate_id())),
 ('oadrCancelReport', dict(request_id=generate_id(), ven_id='123ABC', report_request_id=generate_id(), report_to_follow=True)),
-('oadrCreatedEvent', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()},
+('oadrCreatedEvent', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': None},
                                  event_responses=[{'response_code': 200, 'response_description': 'OK', 'request_id': generate_id(), 'event_id': generate_id(), 'modification_number': 1, 'opt_type': 'optIn'},
                                                   {'response_code': 200, 'response_description': 'OK', 'request_id': generate_id(), 'event_id': generate_id(), 'modification_number': 1, 'opt_type': 'optIn'},
                                                   {'response_code': 200, 'response_description': 'OK', 'request_id': generate_id(), 'event_id': generate_id(), 'modification_number': 1, 'opt_type': 'optIn'}],
                                  ven_id='123ABC')),
-('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'request_id': generate_id()}, {'request_id': generate_id()}], ven_id='123ABC')),
-('oadrCreatedEvent', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()},
+('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'report_request_id': generate_id()}], ven_id='123ABC')),
+('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[], ven_id='123ABC')),
+('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'report_request_id': '123'}], ven_id='123ABC')),
+('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'report_request_id': generate_id()}, {'report_request_id': generate_id()}], ven_id='123ABC')),
+('oadrCreatedEvent', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': None},
                                  event_responses=[{'response_code': 200, 'response_description': 'OK', 'request_id': generate_id(),
                                                     'event_id': generate_id(),
                                                     'modification_number': 1,
@@ -98,7 +130,7 @@ testcases = [
                                              profiles=[{'profile_name': '2.0b',
                                                         'transports': [{'transport_name': 'simpleHttp'}]}],
                                              vtn_id='VTN123')),
-('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'request_id': generate_id()}, {'request_id': generate_id()}])),
+('oadrCreatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, pending_reports=[{'report_request_id': generate_id()}, {'report_request_id': generate_id()}])),
 ('oadrCreateOpt', dict(opt_id=generate_id(),
                               opt_type='optIn',
                               opt_reason='participating',
@@ -107,6 +139,7 @@ testcases = [
                               event_id=generate_id(),
                               modification_number=1,
                               targets=[{'ven_id': '123ABC'}],
+                              targets_by_type=group_targets_by_type([{'ven_id': '123ABC'}]),
                               ven_id='VEN123')),
 ('oadrCreatePartyRegistration', dict(request_id=generate_id(), ven_id='123ABC', profile_name='2.0b', transport_name='simpleHttp', transport_address='http://localhost', report_only=False, xml_signature=False, ven_name='test', http_pull_model=True)),
 ('oadrCreateReport', dict(request_id=generate_id(),
@@ -120,6 +153,7 @@ testcases = [
                                                                        'specifier_payloads': [{'r_id': 'd6e2e07485',
                                                                                              'reading_type': 'Direct Read'}]}}])),
 ('oadrDistributeEvent', dict(request_id=generate_id(), response={'request_id': 123, 'response_code': 200, 'response_description': 'OK'}, events=[create_dummy_event(ven_id='123ABC')], vtn_id='VTN123')),
+('oadrDistributeEvent', dict(request_id=generate_id(), response={'request_id': 123, 'response_code': 200, 'response_description': 'OK'}, events=[create_dummy_event(ven_id='123ABC'), create_dummy_event(ven_id='123ABC')], vtn_id='VTN123')),
 ('oadrPoll', dict(ven_id='123ABC')),
 ('oadrQueryRegistration', dict(request_id=generate_id())),
 ('oadrRegisteredReport', dict(ven_id='VEN123', response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()},
@@ -141,10 +175,9 @@ testcases = [
                                                                                                     'reading_type': 'Direct Read'}]}}])),
 ('oadrRequestEvent', dict(request_id=generate_id(), ven_id='123ABC')),
 ('oadrRequestReregistration', dict(ven_id='123ABC')),
-('oadrRegisterReport', dict(request_id=generate_id(), reports=[{'report_id': generate_id(),
-                                                                'report_descriptions': [{
+('oadrRegisterReport', dict(request_id=generate_id(), reports=[{'report_descriptions': [{
                                                                      'r_id': generate_id(),
-                                                                     'report_subject': {'resource_id': '123ABC'},
+                                                                     'report_subject': {'end_device_asset': {'mrid': 'meter001'}},
                                                                      'report_data_source': {'resource_id': '123ABC'},
                                                                      'report_type': 'reading',
                                                                      'reading_type': 'Direct Read',
@@ -156,70 +189,74 @@ testcases = [
                                                                 'created_date_time': datetime.now(timezone.utc)}],
                                                         ven_id='123ABC',
                                                         report_request_id=generate_id())),
-('oadrRegisterReport', {'request_id': '8a4f859883', 'reports': [{'report_id': generate_id(),
-                                                                 'duration': timedelta(seconds=7200),
+('oadrRegisterReport', {'request_id': '8a4f859883', 'reports': [{'duration': timedelta(seconds=7200),
                                                                  'report_descriptions': [{'r_id': generate_id(),
                                                                                           'report_data_source': {'resource_id': 'resource1'},
                                                                                           'report_type': 'x-resourceStatus',
                                                                                           'reading_type': 'x-notApplicable',
                                                                                           'market_context': 'http://MarketContext1',
                                                                                           'sampling_rate': {'min_period': timedelta(seconds=60), 'max_period': timedelta(seconds=60), 'on_change': False}}],
-                                                                  'report_request_id': '0',
+                                                                  'report_request_id': 0,
                                                                   'report_specifier_id': '789ed6cd4e_telemetry_status',
                                                                   'report_name': 'METADATA_TELEMETRY_STATUS',
                                                                   'created_date_time': datetime(2019, 11, 20, 15, 4, 52, 638621, tzinfo=timezone.utc)},
-                                                                 {'report_id': generate_id(),
-                                                                  'duration': timedelta(seconds=7200),
+                                                                 {'duration': timedelta(seconds=7200),
                                                                   'report_descriptions': [{'r_id': 'resource1_energy',
                                                                                            'report_data_source': {'resource_id': 'resource1'},
                                                                                            'report_type': 'usage',
-                                                                                           'measurement': {'item_name': 'energyReal',
-                                                                                                           'item_description': 'RealEnergy',
-                                                                                                           'item_units': 'Wh',
-                                                                                                           'si_scale_code': 'n'},
+                                                                                           'measurement': {'name': 'energyReal',
+                                                                                                           'description': 'RealEnergy',
+                                                                                                           'ns': 'power',
+                                                                                                           'unit': 'Wh',
+                                                                                                           'scale': 'n'},
                                                                                            'reading_type': 'Direct Read',
                                                                                            'market_context': 'http://MarketContext1',
                                                                                            'sampling_rate': {'min_period': timedelta(seconds=60), 'max_period': timedelta(seconds=60), 'on_change': False}},
                                                                                           {'r_id': 'resource1_power',
                                                                                            'report_data_source': {'resource_id': 'resource1'},
                                                                                            'report_type': 'usage',
-                                                                                           'measurement': {'item_name': 'powerReal',
-                                                                                                           'item_description': 'RealPower',
-                                                                                                           'item_units': 'W',
-                                                                                                           'si_scale_code': 'n'},
+                                                                                           'measurement': {'name': 'powerReal',
+                                                                                                           'description': 'RealPower',
+                                                                                                           'ns': 'power',
+                                                                                                           'unit': 'W',
+                                                                                                           'scale': 'n',
+                                                                                                           'power_attributes': {'hertz': 50, 'voltage': 230, 'ac': True}},
                                                                                             'reading_type': 'Direct Read',
                                                                                             'market_context': 'http://MarketContext1',
                                                                                             'sampling_rate': {'min_period': timedelta(seconds=60), 'max_period': timedelta(seconds=60), 'on_change': False}}],
-                                                                  'report_request_id': '0',
+                                                                  'report_request_id': 0,
                                                                   'report_specifier_id': '789ed6cd4e_telemetry_usage',
                                                                   'report_name': 'METADATA_TELEMETRY_USAGE',
                                                                   'created_date_time': datetime(2019, 11, 20, 15, 4, 52, 638621, tzinfo=timezone.utc)},
-                                                                 {'report_id': generate_id(),
-                                                                  'duration': timedelta(seconds=7200),
+                                                                 {'duration': timedelta(seconds=7200),
                                                                   'report_descriptions': [{'r_id': 'resource1_energy',
                                                                                            'report_data_source': {'resource_id': 'resource1'},
                                                                                            'report_type': 'usage',
-                                                                                           'measurement': {'item_name': 'energyReal',
-                                                                                                           'item_description': 'RealEnergy',
-                                                                                                           'item_units': 'Wh',
-                                                                                                           'si_scale_code': 'n'},
+                                                                                           'measurement': {'name': 'energyReal',
+                                                                                                           'description': 'RealEnergy',
+                                                                                                           'ns': 'power',
+                                                                                                           'unit': 'Wh',
+                                                                                                           'scale': 'n'},
                                                                                            'reading_type': 'Direct Read',
                                                                                            'market_context': 'http://MarketContext1',
                                                                                            'sampling_rate': {'min_period': timedelta(seconds=60), 'max_period': timedelta(seconds=60), 'on_change': False}},
                                                                                           {'r_id': 'resource1_power',
                                                                                            'report_data_source': {'resource_id': 'resource1'},
                                                                                            'report_type': 'usage',
-                                                                                           'measurement': {'item_name': 'powerReal',
-                                                                                                           'item_description': 'RealPower',
-                                                                                                           'item_units': 'W',
-                                                                                                           'si_scale_code': 'n'},
+                                                                                           'measurement': {'name': 'powerReal',
+                                                                                                           'description': 'RealPower',
+                                                                                                           'ns': 'power',
+                                                                                                           'unit': 'W',
+                                                                                                           'scale': 'n',
+                                                                                                           'power_attributes': {'hertz': 50, 'voltage': 230, 'ac': True}},
                                                                                             'reading_type': 'Direct Read',
                                                                                             'market_context': 'http://MarketContext1',
                                                                                             'sampling_rate': {'min_period': timedelta(seconds=60), 'max_period': timedelta(seconds=60), 'on_change': False}}],
-                                                                  'report_request_id': '0',
+                                                                  'report_request_id': generate_id(),
                                                                   'report_specifier_id': '789ed6cd4e_history_usage',
                                                                   'report_name': 'METADATA_HISTORY_USAGE',
                                                                   'created_date_time': datetime(2019, 11, 20, 15, 4, 52, 638621, tzinfo=timezone.utc)}], 'ven_id': 's3cc244ee6'}),
+('oadrRegisterReport', {'ven_id': 'ven123', 'request_id': generate_id(), 'reports': reports}),
 ('oadrResponse', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, ven_id='123ABC')),
 ('oadrResponse', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': None}, ven_id='123ABC')),
 ('oadrUpdatedReport', dict(response={'response_code': 200, 'response_description': 'OK', 'request_id': generate_id()}, ven_id='123ABC', cancel_report={'request_id': generate_id(), 'report_request_id': [generate_id(), generate_id(), generate_id()], 'report_to_follow': False, 'ven_id': '123ABC'})),
@@ -229,7 +266,7 @@ testcases = [
                                                               'report_request_id': generate_id(),
                                                               'report_specifier_id': generate_id(),
                                                               'report_descriptions': [{'r_id': generate_id(),
-                                                                                       'report_subject': {'resource_id': '123ABC'},
+                                                                                       'report_subject': {'end_device_asset': {'mrid': 'meter001'}},
                                                                                        'report_data_source': {'resource_id': '123ABC'},
                                                                                        'report_type': enums.REPORT_TYPE.values[0],
                                                                                        'reading_type': enums.READING_TYPE.values[0],
@@ -237,13 +274,47 @@ testcases = [
                                                                                        'sampling_rate': {'min_period': timedelta(minutes=1),
                                                                                                          'max_period': timedelta(minutes=2),
                                                                                                          'on_change': False}}
-                                                                                        ]}], ven_id='123ABC'))
-
+                                                                                        ]}], ven_id='123ABC')),
 ]
 
 @pytest.mark.parametrize('message_type,data', testcases)
 def test_message(message_type, data):
+    # file = open('representations.rst', 'a')
+    # print(f".. _{message_type}:", file=file)
+    # print("", file=file)
+    # print(message_type, file=file)
+    # print("="*len(message_type), file=file)
+    # print("", file=file)
+    # print("OpenADR payload:", file=file)
+    # print("", file=file)
+    # print(".. code-block:: xml", file=file)
+    # print("    ", file=file)
     message = create_message(message_type, **data)
-    print(message)
+    # message = re.sub(r"\s\s+","",message)
+    # message = message.replace("\n","")
+    # xml_lines = etree.tostring(etree.fromstring(message.replace('\n', '').encode('utf-8')), pretty_print=True).decode('utf-8').splitlines()
+    # for line in xml_lines:
+    #      print("    " + line, file=file)
+    # print("", file=file)
+    # print("OpenLEADR representation:", file=file)
+    # print("    ", file=file)
+    # print(".. code-block:: python3", file=file)
+    # print("    ", file=file)
+    validate_xml_schema(message)
     parsed = parse_message(message)[1]
+    # dict_lines = pformat(parsed).splitlines()
+    # for line in dict_lines:
+    #     print("    " + line, file=file)
+    # print("", file=file)
+    # print("", file=file)
+    if message_type == 'oadrRegisterReport':
+        for report in data['reports']:
+            for rd in report['report_descriptions']:
+                if 'measurement' in rd:
+                    rd['measurement'].pop('ns')
+    if message_type == 'oadrDistributeEvent':
+        for event in data['events']:
+            for signal in event['event_signals']:
+                if 'measurement' in signal:
+                    signal['measurement'].pop('ns')
     assert parsed == data

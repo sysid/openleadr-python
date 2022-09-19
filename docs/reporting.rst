@@ -1,3 +1,5 @@
+.. _reporting:
+
 =========
 Reporting
 =========
@@ -43,27 +45,27 @@ Say you have two devices, 'Device001' and 'Device002', which can each offer meas
         client.add_report(callback=partial(read_current, device='Device001'),
                           report_specifier_id='AmpereReport',
                           resource_id='Device001',
-                          measurement='current',
+                          measurement='Current',
                           sampling_rate=timedelta(seconds=10),
                           unit='A')
         client.add_report(callback=partial(read_current, device='Device002'),
                           report_specifier_id='AmpereReport',
                           resource_id='Device002',
-                          measurement='current',
+                          measurement='Current',
                           sampling_rate=timedelta(seconds=10),
                           unit='A')
         client.add_report(callback=partial(read_voltage, device='Device001'),
                           report_specifier_id='VoltageReport',
                           resource_id='Device001',
-                          measurement='current',
+                          measurement='Voltage',
                           sampling_rate=timedelta(seconds=10),
-                          unit='A')
+                          unit='V')
         client.add_report(callback=partial(read_voltage, device='Device002'),
                           report_specifier_id='VoltageReport',
                           resource_id='Device002',
-                          measurement='current',
+                          measurement='Voltage',
                           sampling_rate=timedelta(seconds=10),
-                          unit='A')
+                          unit='V')
         await client.run()
 
     async def read_voltage(device):
@@ -106,9 +108,9 @@ Here's an example:
                           sampling_rate=timedelta(seconds=10),
                           unit='A')
 
-    async def load_data(date_from, date_to, sampling_rate):
+    async def load_data(date_from, date_to, sampling_interval):
         """
-        Function that loads data between date_from and date_to, sampled at sampling_rate.
+        Function that loads data between date_from and date_to, sampled at sampling_interval.
         """
         # Load data from a backend system
         result = await database.get("""SELECT time_bucket('15 minutes', datetime) as dt, AVG(value)
@@ -117,7 +119,13 @@ Here's an example:
                                         GROUP BY dt
                                         ORDER BY dt""")
         # Pack the data into a list of (datetime, value) tuples
-        data = [result.fetchall()]
+        data = result.fetchall()
+
+        # data should look like:
+        # [(datetime.datetime(2020, 1, 1, 12, 0, 0), 10.0),
+        #  (datetime.datetime(2020, 1, 1, 12, 15, 0), 9.0),
+        #  (datetime.datetime(2020, 1, 1, 12, 30, 0), 11.0),
+        #  (datetime.datetime(2020, 1, 1, 12, 45, 0), 12.0)]
         return data
 
 
@@ -166,11 +174,12 @@ The compact format provides an abstraction over the actual encapsulation of repo
 
 .. code-block:: python3
 
-    async def on_register_report(resource_id, measurement, unit, scale,
-                                 min_sampling_rate, max_sampling_rate):
-        # This
+    async def on_register_report(ven_id, resource_id, measurement, unit, scale,
+                                 min_sampling_interval, max_sampling_interval):
         if want_report:
             return (callback, sampling_interval, report_interval)
+        else:
+            return None
 
 The ``callback`` refers to a function or coroutine that will be called when data is received.
 The ``sampling_interval`` is a ``timedelta`` object that contains the interval at which data is sampled by the client.
@@ -280,7 +289,9 @@ or a list of ``(datetime.datetime, value)`` tuples. This last type is useful whe
 
 This was already described in the previous section on this page.
 
+
 .. receiving_reports::
+
 Receiving Reports (VTN)
 -----------------------
 

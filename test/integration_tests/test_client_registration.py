@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 import asyncio
 import sqlite3
 import pytest
+import pytest_asyncio
 from aiohttp import web
 
 import os
@@ -31,29 +32,25 @@ VEN_NAME = 'myven'
 VEN_ID = '1234abcd'
 VTN_ID = "TestVTN"
 
-CERTFILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cert.pem")
-KEYFILE =  os.path.join(os.path.dirname(os.path.dirname(__file__)), "key.pem")
-
+CERTFILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'certificates', 'dummy_ven.crt')
+KEYFILE =  os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'certificates', 'dummy_ven.key')
+CAFILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'certificates', 'dummy_ca.crt')
 
 async def _on_create_party_registration(payload):
     registration_id = generate_id()
     return VEN_ID, registration_id
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def start_server():
-    server = OpenADRServer(vtn_id=VTN_ID)
+    server = OpenADRServer(vtn_id=VTN_ID, http_port=SERVER_PORT)
     server.add_handler('on_create_party_registration', _on_create_party_registration)
-
-    runner = web.AppRunner(server.app)
-    await runner.setup()
-    site = web.TCPSite(runner, 'localhost', SERVER_PORT)
-    await site.start()
+    await server.run_async()
     yield
-    await runner.cleanup()
+    await server.stop()
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def start_server_with_signatures():
-    server = OpenADRServer(vtn_id=VTN_ID, cert=CERTFILE, key=KEYFILE, passphrase='openadr', fingerprint_lookup=fingerprint_lookup, http_port=SERVER_PORT)
+    server = OpenADRServer(vtn_id=VTN_ID, cert=CERTFILE, key=KEYFILE, fingerprint_lookup=fingerprint_lookup, http_port=SERVER_PORT)
     server.add_handler('on_create_party_registration', _on_create_party_registration)
     await server.run_async()
     yield
@@ -68,6 +65,7 @@ async def test_query_party_registration(start_server):
     response_type, response_payload = await client.query_registration()
     assert response_type == 'oadrCreatedPartyRegistration'
     assert response_payload['vtn_id'] == VTN_ID
+    await client.stop()
 
 @pytest.mark.asyncio
 async def test_create_party_registration(start_server):
@@ -77,7 +75,7 @@ async def test_create_party_registration(start_server):
     response_type, response_payload = await client.create_party_registration()
     assert response_type == 'oadrCreatedPartyRegistration'
     assert response_payload['ven_id'] == VEN_ID
-
+    await client.stop()
 
 def fingerprint_lookup(ven_id):
     with open(CERTFILE) as file:
@@ -85,16 +83,16 @@ def fingerprint_lookup(ven_id):
     return certificate_fingerprint(cert)
 
 @pytest.mark.asyncio
-async def test_create_party_registration_with_signatures(start_server_with_signatures):
+@pytest.mark.parametrize("disable_signature", [False, True])
+async def test_create_party_registration_with_signatures(start_server_with_signatures, disable_signature):
     with open(CERTFILE) as file:
         cert = file.read()
     client = OpenADRClient(ven_name=VEN_NAME,
                            vtn_url=f"http://localhost:{SERVER_PORT}/OpenADR2/Simple/2.0b",
-                           cert=CERTFILE, key=KEYFILE, passphrase='openadr', vtn_fingerprint=certificate_fingerprint(cert))
+                           cert=CERTFILE, key=KEYFILE, ca_file=CAFILE, vtn_fingerprint=certificate_fingerprint(cert),
+                           disable_signature=disable_signature)
 
     response_type, response_payload = await client.create_party_registration()
     assert response_type == 'oadrCreatedPartyRegistration'
     assert response_payload['ven_id'] == VEN_ID
     await client.stop()
-
-
