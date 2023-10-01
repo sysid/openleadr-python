@@ -721,7 +721,7 @@ async def test_report_registration_broken_handlers_raw_message(caplog):
             <p1:oadrOnChange>false</p1:oadrOnChange>
           </p1:oadrSamplingRate>
         </p1:oadrReportDescription>
-        <p4:reportRequestID>0</p4:reportRequestID>
+        <p4:reportRequestID></p4:reportRequestID>
         <p4:reportSpecifierID>DEMO_TELEMETRY_USAGE</p4:reportSpecifierID>
         <p4:reportName>METADATA_TELEMETRY_USAGE</p4:reportName>
         <p4:createdDateTime>2020-12-15T14:10:32Z</p4:createdDateTime>
@@ -841,6 +841,61 @@ async def test_register_report_handler_returns_none():
 
     # Client-side check that the report was not requested by the VTN
     assert len(client.report_requests) == 0
+
+    await client.stop()
+    await server.stop()
+
+
+
+@pytest.mark.asyncio
+async def test_client_without_reports():
+    server = OpenADRServer(vtn_id="myvtn")
+    server.add_handler('on_create_party_registration', on_create_party_registration)
+    server.add_handler('on_register_report', on_register_report)
+    await server.run_async()
+
+    client = OpenADRClient(ven_name="myven",
+                           vtn_url="http://localhost:8080/OpenADR2/Simple/2.0b")
+    await client.run()
+
+    await asyncio.sleep(1)
+    await client.stop()
+    await server.stop()
+    assert True
+
+
+@pytest.mark.asyncio
+async def test_report_from_vtn_to_ven():
+    async def on_poll_providing_reports(ven_id, future):
+        if not future.done():
+            future.set_result(True)
+            return 'oadrRegisterReport', {'reports': [], 'request_id': 'req123'}
+        else:
+            return None
+
+    async def on_registered_report_vtn(payload, future):
+        future.set_result(True)
+
+    logger = logging.getLogger('openleadr')
+    # logger.setLevel(logging.DEBUG)
+
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    fut2 = loop.create_future()
+    server = OpenADRServer(vtn_id="myvtn")
+    server.add_handler('on_create_party_registration', on_create_party_registration)
+    server.add_handler('on_register_report', on_register_report)
+    server.add_handler('on_poll', partial(on_poll_providing_reports, future=fut2))
+    server._MAP['on_registered_report'] = 'report_service'
+    server.add_handler('on_registered_report', partial(on_registered_report_vtn, future=fut))
+    await server.run_async()
+
+    client = OpenADRClient(ven_name="myven",
+                           vtn_url="http://localhost:8080/OpenADR2/Simple/2.0b")
+    await client.run()
+
+    await fut
+    assert fut.result() == True
 
     await client.stop()
     await server.stop()
